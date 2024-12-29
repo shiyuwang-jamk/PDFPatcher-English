@@ -28,6 +28,8 @@ namespace PDFPatcher.Functions
 
 		readonly Dictionary<BookmarkElement, Color> _markers = new Dictionary<BookmarkElement, Color>();
 
+		public event EventHandler BookmarkChanged;
+
 		public BookmarkEditorView() {
 			InitializeComponent();
 			InitEditorBox();
@@ -113,6 +115,14 @@ namespace PDFPatcher.Functions
 				}
 				return a;
 			};
+		}
+
+		internal void FireBookmarkChanged() {
+			BookmarkChanged?.Invoke(this, EventArgs.Empty);
+		}
+
+		public BookmarkElement GetBookmark(int index) {
+			return GetModelObject(index) as BookmarkElement;
 		}
 
 		protected override void OnBeforeSorting(BeforeSortingEventArgs e) {
@@ -596,28 +606,46 @@ namespace PDFPatcher.Functions
 			if (args.Model is not BookmarkElement b) {
 				return;
 			}
-			args.Item.UseItemStyleForSubItems = false;
+
+			var item = args.Item;
+			item.UseItemStyleForSubItems = false;
 			args.UseCellFormatEvents = false;
 			Color c;
 			if (b.MarkerColor != 0) {
-				args.Item.BackColor = Color.FromArgb(b.MarkerColor);
+				item.BackColor = Color.FromArgb(b.MarkerColor);
 			}
 			c = b.ForeColor;
 			if (c != Color.Transparent) {
-				args.Item.ForeColor = c;
+				item.ForeColor = c;
 			}
 
 			if (b.Title.IndexOf('\n') >= 0) {
-				args.Item.GetSubItem(0).Decoration = new TextDecoration("…", ContentAlignment.BottomRight) { Font = Font };
+				item.GetSubItem(0).Decoration = new TextDecoration("…", ContentAlignment.BottomRight) { Font = Font };
 			}
 			var ts = b.TextStyle;
 			if (ts != FontStyle.Regular) {
-				args.Item.Font = new Font(args.Item.Font, ts);
+				item.Font = new Font(item.Font, ts);
 			}
 			if (_ActionColumn.Index != -1) {
-				args.Item.SubItems[_ActionColumn.Index].ForeColor = Color.Blue;
+				item.SubItems[_ActionColumn.Index].ForeColor = Color.Blue;
 			}
 		}
+
+		#region 使右键点击选中行的空白位置时，不取消选中状态
+		protected override void OnMouseDown(MouseEventArgs e) {
+			if (e.Button != MouseButtons.Left) {
+				FullRowSelect = true;
+			}
+			base.OnMouseDown(e);
+		}
+
+		protected override void OnMouseUp(MouseEventArgs e) {
+			base.OnMouseUp(e);
+			if (e.Button != MouseButtons.Left) {
+				FullRowSelect = false;
+			}
+		}
+		#endregion
 
 		internal void ShowBookmarkProperties(BookmarkElement bookmark) {
 			if (bookmark == null) {

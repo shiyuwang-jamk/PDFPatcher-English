@@ -25,6 +25,7 @@ namespace PDFPatcher.Processor
 		readonly List<ImageInfo> _imageInfoList = new List<ImageInfo>();
 		readonly List<ImageDisposition> _imagePosList = new List<ImageDisposition>();
 		readonly HashSet<PdfObject> _exportedImages = new HashSet<PdfObject>();
+		readonly Stack<PdfObject> _visited = new Stack<PdfObject>();
 
 		internal List<ImageInfo> InfoList => _imageInfoList;
 		internal List<ImageDisposition> PosList => _imagePosList;
@@ -45,6 +46,7 @@ namespace PDFPatcher.Processor
 			_imageCount = 0;
 			_imageInfoList.Clear();
 			_imagePosList.Clear();
+			_visited.Clear();
 			var o = reader.GetPageNRelease(pageNum);
 			if (o == null) {
 				return;
@@ -62,6 +64,10 @@ namespace PDFPatcher.Processor
 				if (_options.ExtractOutOfPageImages == false) {
 					_imageInfoList.RemoveAll(IsOutOfPage);
 				}
+			}
+			pp = o.Locate<PdfDictionary>(PdfName.RESOURCES, PdfName.PATTERN);
+			if (pp != null) {
+				ExtractImageInstances(pp, true);
 			}
 			// 收集批注中的图片
 			if (_options.ExtractAnnotationImages) {
@@ -126,9 +132,11 @@ namespace PDFPatcher.Processor
 				if (PdfName.SMASK.Equals(item.Key)
 					|| PdfName.MASK.Equals(item.Key)
 					|| _options.AllowRedundantImages == false && _exportedImages.Contains(item.Value)
-					|| PdfReader.GetPdfObject(item.Value) is not PdfDictionary obj) {
+					|| PdfReader.GetPdfObject(item.Value) is not PdfDictionary obj
+					|| _visited.Contains(item.Value)) {
 					continue;
 				}
+				_visited.Push(item.Value);
 				if (obj is not PRStream stream) {
 					goto NEXT;
 				}
@@ -170,6 +178,7 @@ namespace PDFPatcher.Processor
 				if (recursive) {
 					ExtractImageInstances(obj, true);
 				}
+				_visited.Pop();
 			}
 		}
 

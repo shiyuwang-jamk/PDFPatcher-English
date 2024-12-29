@@ -11,9 +11,9 @@ namespace PDFPatcher.Processor
 	internal class PdfContentStreamProcessor
 	{
 		// Fields
-		readonly Stack<Model.GraphicsState> gsStack = new Stack<Model.GraphicsState>();
-		readonly Stack<MarkedContentInfo> markedContentStack = new Stack<MarkedContentInfo>();
-		readonly IDictionary<string, IContentOperator> operators = new Dictionary<string, IContentOperator>();
+		readonly Stack<Model.GraphicsState> _GsStack = new Stack<Model.GraphicsState>();
+		readonly Stack<MarkedContentInfo> _MarkedContentStack = new Stack<MarkedContentInfo>();
+		readonly Dictionary<string, IContentOperator> _Operators = new Dictionary<string, IContentOperator>();
 		readonly Dictionary<PdfName, IXObjectDoHandler> _XObjectDoHandlers = new Dictionary<PdfName, IXObjectDoHandler>();
 		readonly Dictionary<int, FontInfoCache> _FontCache = new Dictionary<int, FontInfoCache>();
 		readonly Dictionary<int, string> _FontNameCache = new Dictionary<int, string>();
@@ -28,7 +28,7 @@ namespace PDFPatcher.Processor
 		}
 
 		// Methods
-		internal Model.GraphicsState CurrentGraphicState => gsStack.Peek();
+		internal Model.GraphicsState CurrentGraphicState => _GsStack.Peek();
 		internal Matrix TextMatrix => _TextMatrix;
 		internal IContentOperator DefaultOperator { get; set; }
 		protected IDictionary<int, string> Fonts => _FontNameCache;
@@ -44,7 +44,7 @@ namespace PDFPatcher.Processor
 		}
 
 		protected void BeginMarkedContent(PdfName tag, PdfDictionary dict) {
-			markedContentStack.Push(new MarkedContentInfo(tag, dict));
+			_MarkedContentStack.Push(new MarkedContentInfo(tag, dict));
 		}
 
 		private void BeginText() {
@@ -93,7 +93,7 @@ namespace PDFPatcher.Processor
 		}
 
 		private void EndMarkedContent() {
-			markedContentStack.Pop();
+			_MarkedContentStack.Pop();
 		}
 
 		private void EndText() {
@@ -101,7 +101,7 @@ namespace PDFPatcher.Processor
 		}
 
 		protected virtual void InvokeOperator(PdfLiteral oper, List<PdfObject> operands) {
-			if (operators.TryGetValue(oper.ToString(), out IContentOperator op)) {
+			if (_Operators.TryGetValue(oper.ToString(), out IContentOperator op)) {
 				op.Invoke(this, oper, operands);
 			}
 			else {
@@ -159,14 +159,22 @@ namespace PDFPatcher.Processor
 			var ps = new PdfContentParser(tokenizer);
 			var operands = new List<PdfObject>();
 			while (ps.Parse(operands).Count > 0) {
-				var oper = (PdfLiteral)operands[operands.Count - 1];
+				var oper = operands[operands.Count - 1] as PdfLiteral;
+				if (oper is null) {
+					break;
+				}
 				if ("BI".Equals(oper.ToString())) {
 					var img = InlineImageUtils.ParseInlineImage(ps, resources.GetAsDict(PdfName.COLORSPACE));
 					InvokeOperator(oper, new List<PdfObject> { img, oper });
 					//    this.renderListener.RenderImage (renderInfo);
 				}
 				else {
-					InvokeOperator(oper, operands);
+					try {
+						InvokeOperator(oper, operands);
+					}
+					catch (Exception) {
+						continue;
+					}
 				}
 			}
 			tokenizer.Close();
@@ -175,22 +183,21 @@ namespace PDFPatcher.Processor
 
 		internal IContentOperator RegisterContentOperator(string operatorString, IContentOperator oper) {
 			if (oper == null) {
-				operators.Remove(operatorString);
+				_Operators.Remove(operatorString);
 				return null;
 			}
-			return operators[operatorString] = oper;
+			return _Operators[operatorString] = oper;
 		}
 
 		internal IXObjectDoHandler RegisterXObjectDoHandler(PdfName xobjectSubType, IXObjectDoHandler handler) {
-			IXObjectDoHandler old;
-			_XObjectDoHandlers.TryGetValue(xobjectSubType, out old);
+			_XObjectDoHandlers.TryGetValue(xobjectSubType, out IXObjectDoHandler old);
 			_XObjectDoHandlers[xobjectSubType] = handler;
 			return old;
 		}
 
 		internal virtual void Reset() {
-			gsStack.Clear();
-			gsStack.Push(new Model.GraphicsState());
+			_GsStack.Clear();
+			_GsStack.Push(new Model.GraphicsState());
 			_TextMatrix = null;
 			_TextLineMatrix = null;
 			_Resources = new ResourceDictionary();
@@ -268,23 +275,22 @@ namespace PDFPatcher.Processor
 
 		protected sealed class FormXObjectDoHandler : IXObjectDoHandler
 		{
-			// Methods
 			public void HandleXObject(PdfContentStreamProcessor processor, PdfStream stream, PdfIndirectReference refi) {
 				var resources = stream.GetAsDict(PdfName.RESOURCES);
 				var contentBytes = ContentByteUtils.GetContentBytesFromContentObject(stream);
 				var matrix = stream.GetAsArray(PdfName.MATRIX);
-				new PdfContentStreamProcessor.PushGraphicsState().Invoke(processor, null, null);
+				new PushGraphicsState().Invoke(processor, null, null);
 				if (matrix != null) {
-					float a = matrix.GetAsNumber(0).FloatValue;
-					float b = matrix.GetAsNumber(1).FloatValue;
-					float c = matrix.GetAsNumber(2).FloatValue;
-					float d = matrix.GetAsNumber(3).FloatValue;
-					float e = matrix.GetAsNumber(4).FloatValue;
-					float f = matrix.GetAsNumber(5).FloatValue;
+					float a = matrix[0].ValueAsFloat();
+					float b = matrix[1].ValueAsFloat();
+					float c = matrix[2].ValueAsFloat();
+					float d = matrix[3].ValueAsFloat();
+					float e = matrix[4].ValueAsFloat();
+					float f = matrix[5].ValueAsFloat();
 					processor.CurrentGraphicState.TransMatrix = new Matrix(a, b, c, d, e, f).Multiply(processor.CurrentGraphicState.TransMatrix);
 				}
 				processor.ProcessContent(contentBytes, resources);
-				new PdfContentStreamProcessor.PopGraphicsState().Invoke(processor, null, null);
+				new PopGraphicsState().Invoke(processor, null, null);
 			}
 		}
 
@@ -297,14 +303,12 @@ namespace PDFPatcher.Processor
 
 		protected sealed class IgnoreXObjectDoHandler : IXObjectDoHandler
 		{
-			// Methods
 			public void HandleXObject(PdfContentStreamProcessor processor, PdfStream xobjectStream, PdfIndirectReference refi) {
 			}
 		}
 
 		protected sealed class ImageXObjectDoHandler : IXObjectDoHandler
 		{
-			// Methods
 			public void HandleXObject(PdfContentStreamProcessor processor, PdfStream xobjectStream, PdfIndirectReference refi) {
 				//ImageRenderInfo renderInfo = ImageRenderInfo.CreateForXObject (processor.CurrentGraphicState.TransMatrix, refi);
 				//processor.renderListener.RenderImage (renderInfo);
@@ -315,13 +319,13 @@ namespace PDFPatcher.Processor
 		{
 			public bool HasOutput => false;
 			public void Invoke(PdfContentStreamProcessor processor, PdfLiteral oper, List<PdfObject> operands) {
-				float a = ((PdfNumber)operands[0]).FloatValue;
-				float b = ((PdfNumber)operands[1]).FloatValue;
-				float c = ((PdfNumber)operands[2]).FloatValue;
-				float d = ((PdfNumber)operands[3]).FloatValue;
-				float e = ((PdfNumber)operands[4]).FloatValue;
-				float f = ((PdfNumber)operands[5]).FloatValue;
-				var gs = processor.gsStack.Peek();
+				float a = operands[0].ValueAsFloat();
+				float b = operands[1].ValueAsFloat();
+				float c = operands[2].ValueAsFloat();
+				float d = operands[3].ValueAsFloat();
+				float e = operands[4].ValueAsFloat();
+				float f = operands[5].ValueAsFloat();
+				var gs = processor._GsStack.Peek();
 				gs.TransMatrix = new Matrix(a, b, c, d, e, f).Multiply(gs.TransMatrix);
 			}
 		}
@@ -331,11 +335,12 @@ namespace PDFPatcher.Processor
 			readonly IContentOperator showText;
 			readonly IContentOperator textMoveNextLine;
 
-			public bool HasOutput => true;
 			public MoveNextLineAndShowText(IContentOperator textMoveNextLine, IContentOperator showText) {
-				this.textMoveNextLine = textMoveNextLine;
 				this.showText = showText;
+				this.textMoveNextLine = textMoveNextLine;
 			}
+
+			public bool HasOutput => true;
 
 			public void Invoke(PdfContentStreamProcessor processor, PdfLiteral oper, List<PdfObject> operands) {
 				textMoveNextLine.Invoke(processor, null, new List<PdfObject>(0));
@@ -377,7 +382,7 @@ namespace PDFPatcher.Processor
 			public bool HasOutput => false;
 			public void Invoke(PdfContentStreamProcessor processor, PdfLiteral oper, List<PdfObject> operands) {
 				try {
-					processor.gsStack.Pop();
+					processor._GsStack.Pop();
 				}
 				catch (InvalidOperationException) {
 					Tracker.DebugMessage("绘图状态堆栈为空。");
@@ -411,33 +416,30 @@ namespace PDFPatcher.Processor
 		{
 			public bool HasOutput => false;
 			public void Invoke(PdfContentStreamProcessor processor, PdfLiteral oper, List<PdfObject> operands) {
-				processor.gsStack.Push(processor.gsStack.Peek().Copy());
+				processor._GsStack.Push(processor._GsStack.Peek().Copy());
 			}
 		}
 
 		protected sealed class ResourceDictionary : PdfDictionary
 		{
-			readonly IList<PdfDictionary> resourcesStack = new List<PdfDictionary>();
+			readonly IList<PdfDictionary> _ResourcesStack = new List<PdfDictionary>();
 
 			public override PdfObject GetDirectObject(PdfName key) {
-				for (int i = resourcesStack.Count - 1; i >= 0; i--) {
-					var subResource = resourcesStack[i];
+				for (int i = _ResourcesStack.Count - 1; i >= 0; i--) {
+					var subResource = _ResourcesStack[i]?.GetDirectObject(key);
 					if (subResource != null) {
-						var obj = subResource.GetDirectObject(key);
-						if (obj != null) {
-							return obj;
-						}
+						return subResource;
 					}
 				}
 				return base.GetDirectObject(key);
 			}
 
 			public void Pop() {
-				resourcesStack.RemoveAt(resourcesStack.Count - 1);
+				_ResourcesStack.RemoveAt(_ResourcesStack.Count - 1);
 			}
 
 			public void Push(PdfDictionary resources) {
-				resourcesStack.Add(resources);
+				_ResourcesStack.Add(resources);
 			}
 		}
 
@@ -608,12 +610,12 @@ namespace PDFPatcher.Processor
 		{
 			public bool HasOutput => false;
 			public void Invoke(PdfContentStreamProcessor processor, PdfLiteral oper, List<PdfObject> operands) {
-				float a = ((PdfNumber)operands[0]).FloatValue;
-				float b = ((PdfNumber)operands[1]).FloatValue;
-				float c = ((PdfNumber)operands[2]).FloatValue;
-				float d = ((PdfNumber)operands[3]).FloatValue;
-				float e = ((PdfNumber)operands[4]).FloatValue;
-				float f = ((PdfNumber)operands[5]).FloatValue;
+				float a = operands[0].ValueAsFloat();
+				float b = operands[1].ValueAsFloat();
+				float c = operands[2].ValueAsFloat();
+				float d = operands[3].ValueAsFloat();
+				float e = operands[4].ValueAsFloat();
+				float f = operands[5].ValueAsFloat();
 				processor._TextLineMatrix = new Matrix(a, b, c, d, e, f);
 				processor._TextMatrix = processor._TextLineMatrix;
 			}
